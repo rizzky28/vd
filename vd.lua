@@ -231,6 +231,7 @@ local function create(className, props)
 end
 
 local AutoSelfHeal = { Enabled = false, Conn = nil, LoopThread = nil }
+local FastBandage = { Enabled = false, Conn = nil, LoopThread = nil }
 
 local function SetupHealAnimationBlocker()
     if AutoSelfHeal.Conn then
@@ -306,6 +307,320 @@ LP.CharacterAdded:Connect(function()
     if AutoSelfHeal.Enabled then SetupHealAnimationBlocker(); StartAutoSelfHealLoop() end
 end)
 
+local function SetupFastBandageAnimBlocker()
+    if FastBandage.Conn then
+        pcall(function() FastBandage.Conn:Disconnect() end)
+        FastBandage.Conn = nil
+    end
+    local character = LP.Character
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    local animator = humanoid:FindFirstChildOfClass("Animator")
+    if not animator then return end
+    FastBandage.Conn = animator.AnimationPlayed:Connect(function(track)
+        if track.Animation and tostring(track.Animation.AnimationId):find("95836365038528") then
+            track:Stop(0)
+        end
+    end)
+end
+
+local function TriggerFastBandage()
+    local char = LP.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if hrp and humanoid and humanoid.Health < humanoid.MaxHealth then
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+        local healingFolder = remotes and remotes:FindFirstChild("Healing")
+        local healEvent = healingFolder and healingFolder:FindFirstChild("HealEvent")
+        if healEvent then
+            pcall(function() healEvent:FireServer(hrp, true) end)
+        end
+    end
+end
+
+local function StartFastBandageLoop()
+    if FastBandage.LoopThread then return end
+    FastBandage.LoopThread = task.spawn(function()
+        while FastBandage.Enabled do
+            task.wait(0.15)
+            if not FastBandage.Enabled then break end
+            TriggerFastBandage()
+        end
+        FastBandage.LoopThread = nil
+    end)
+end
+
+local function StopFastBandageLoop()
+    if FastBandage.LoopThread then
+        pcall(function() task.cancel(FastBandage.LoopThread) end)
+        FastBandage.LoopThread = nil
+    end
+end
+
+local function SetFastBandage(state)
+    FastBandage.Enabled = state and true or false
+    if FastBandage.Enabled then
+        SetupFastBandageAnimBlocker()
+        StartFastBandageLoop()
+    else
+        StopFastBandageLoop()
+        if FastBandage.Conn then
+            pcall(function() FastBandage.Conn:Disconnect() end)
+            FastBandage.Conn = nil
+        end
+    end
+end
+
+LP.CharacterAdded:Connect(function()
+    task.wait(1.5)
+    if FastBandage.Enabled then SetupFastBandageAnimBlocker(); StartFastBandageLoop() end
+end)
+
+local InfiniteLunge = { Enabled = false }
+
+local function EnableInfiniteLunge()
+    InfiniteLunge.Enabled = true
+    local c = LP.Character
+    if c then c:SetAttribute("lungeboost", 999) end
+end
+
+local function DisableInfiniteLunge()
+    InfiniteLunge.Enabled = false
+    local c = LP.Character
+    if c then c:SetAttribute("lungeboost", 1) end
+end
+
+local function SetInfiniteLunge(state)
+    if state then EnableInfiniteLunge() else DisableInfiniteLunge() end
+end
+
+LP.CharacterAdded:Connect(function(nc)
+    task.wait(0.8)
+    if InfiniteLunge.Enabled and nc then nc:SetAttribute("lungeboost", 999) end
+end)
+
+local AttackAimbot = {
+    Enabled = false,
+    MaxDist = 12,
+    Smoothness = 0.5,
+    Holding = false,
+    Target = nil,
+}
+
+local function AA_GetRole()
+    if not LP.Team then return "Unknown" end
+    local n = LP.Team.Name
+    if n == "Killer" then return "Killer"
+    elseif n == "Survivors" then return "Survivor"
+    else return "Spectator" end
+end
+
+local function AA_IsDowned(char)
+    if not char then return false end
+    return char:GetAttribute("Knocked") == true or char:GetAttribute("IsHooked") == true
+end
+
+local function AA_GetDistance(pos)
+    local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return math.huge end
+    return (pos - root.Position).Magnitude
+end
+
+local function AA_GetBestTarget()
+    local best = nil
+    local myRole = AA_GetRole()
+    local shortest3D = math.huge
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local valid = false
+            if myRole == "Killer" and AttackAimbot.Enabled and not (p.Team and p.Team.Name == "Killer") then
+                local hum = p.Character:FindFirstChild("Humanoid")
+                if hum and hum.Health > 0 and not AA_IsDowned(p.Character) then valid = true end
+            end
+            if valid then
+                local hrp = p.Character.HumanoidRootPart
+                local d3 = AA_GetDistance(hrp.Position)
+                if myRole == "Killer" and d3 <= AttackAimbot.MaxDist then
+                    if d3 < shortest3D then shortest3D = d3; best = hrp end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local AttackAimbotInputBeganConn = UIS.InputBegan:Connect(function(input, gp)
+    local myRole = AA_GetRole()
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if gp then return end
+        if myRole == "Killer" and AttackAimbot.Enabled then
+            AttackAimbot.Target = AA_GetBestTarget()
+            if AttackAimbot.Target then AttackAimbot.Holding = true end
+        end
+    end
+end)
+
+local AttackAimbotInputEndedConn = UIS.InputEnded:Connect(function(input, gp)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        AttackAimbot.Holding = false
+        AttackAimbot.Target = nil
+    end
+end)
+
+local AttackAimbotRenderConn = RS.RenderStepped:Connect(function()
+    local char = LP.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if AttackAimbot.Enabled and AttackAimbot.Holding then
+        local myRole = AA_GetRole()
+        if myRole == "Killer" and AttackAimbot.Target then
+            local tc = AttackAimbot.Target.Parent
+            local th = tc and tc:FindFirstChild("Humanoid")
+            if not th or th.Health <= 0 or AA_IsDowned(tc) then
+                AttackAimbot.Target = AA_GetBestTarget()
+            end
+            if AttackAimbot.Target then
+                local tp = AttackAimbot.Target.Position
+                if AA_GetDistance(tp) > AttackAimbot.MaxDist then
+                    AttackAimbot.Target = AA_GetBestTarget()
+                else
+                    local cam = workspace.CurrentCamera
+                    if not cam then return end
+                    local g = CFrame.new(cam.CFrame.Position, tp)
+                    cam.CFrame = cam.CFrame:Lerp(g, AttackAimbot.Smoothness)
+                    local gh = CFrame.new(hrp.Position, Vector3.new(tp.X, hrp.Position.Y, tp.Z))
+                    hrp.CFrame = hrp.CFrame:Lerp(gh, AttackAimbot.Smoothness)
+                end
+            end
+        end
+    end
+end)
+
+local SilentAimFlask = { Enabled = false, ShowLaser = true, LaserPart = nil, Thread = nil }
+
+local _flaskPlayerCache = {}
+local _flaskPlayerCacheTime = 0
+
+local function _RefreshFlaskPlayerCache()
+    _flaskPlayerCache = Players:GetPlayers()
+    _flaskPlayerCacheTime = tick()
+end
+_RefreshFlaskPlayerCache()
+Players.PlayerAdded:Connect(_RefreshFlaskPlayerCache)
+Players.PlayerRemoving:Connect(_RefreshFlaskPlayerCache)
+
+local function _GetFlaskPlayers()
+    if tick() - _flaskPlayerCacheTime > 1 then _RefreshFlaskPlayerCache() end
+    return _flaskPlayerCache
+end
+
+local function UpdateCureFlaskLaser()
+    local char = LP.Character
+    if not char then return end
+    local targetPos, originPos, closest, minDst = nil, nil, nil, math.huge
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local hand = char:FindFirstChild("LeftHand") or char:FindFirstChild("Left Arm")
+        originPos = hand and hand.Position or hrp.Position
+        for _, v in pairs(_GetFlaskPlayers()) do
+            if v ~= LP
+            and v.Character and v.Character:FindFirstChild("HumanoidRootPart")
+            and not v.Character:GetAttribute("IsKiller") then
+                local dst = (v.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
+                if dst < minDst then minDst = dst; closest = v end
+            end
+        end
+    end
+    if closest then
+        targetPos = closest.Character.HumanoidRootPart.Position
+    end
+    local actionActive = false
+    for _, child in pairs(char:GetChildren()) do
+        if child:IsA("LocalScript") and child:GetAttribute("action") == true then
+            actionActive = true
+            break
+        end
+    end
+    if originPos and targetPos and actionActive then
+        if not SilentAimFlask.LaserPart then
+            local l = Instance.new("Part")
+            l.Name = "FlaskSilentAimLaser"
+            l.Anchored = true
+            l.CanCollide = false
+            l.CanTouch = false
+            l.CastShadow = false
+            l.Material = Enum.Material.Neon
+            l.Color = Color3.fromRGB(255, 50, 50)
+            l.Transparency = 0
+            l.Parent = workspace
+            SilentAimFlask.LaserPart = l
+        end
+        local dist = (targetPos - originPos).Magnitude
+        if dist > 0.1 then
+            local l = SilentAimFlask.LaserPart
+            l.Size = Vector3.new(0.16, 0.16, dist)
+            l.CFrame = CFrame.new((originPos + targetPos) / 2, targetPos)
+            l.Transparency = 0
+        end
+    else
+        if SilentAimFlask.LaserPart then
+            SilentAimFlask.LaserPart.Transparency = 1
+        end
+    end
+end
+
+local function ClearFlaskLaser()
+    if SilentAimFlask.LaserPart then
+        pcall(function() SilentAimFlask.LaserPart:Destroy() end)
+        SilentAimFlask.LaserPart = nil
+    end
+end
+
+local function StartCureFlaskLaser()
+    if SilentAimFlask.Thread then return end
+    local counter = 0
+    SilentAimFlask.Thread = RS.RenderStepped:Connect(function()
+        counter = counter + 1
+        if counter % 2 ~= 0 then return end
+        if not SilentAimFlask.Enabled or not SilentAimFlask.ShowLaser then
+            ClearFlaskLaser()
+            return
+        end
+        pcall(UpdateCureFlaskLaser)
+    end)
+end
+
+local function StopCureFlaskLaser()
+    if SilentAimFlask.Thread then
+        pcall(function() SilentAimFlask.Thread:Disconnect() end)
+        SilentAimFlask.Thread = nil
+    end
+    ClearFlaskLaser()
+end
+
+local function SetSilentAimFlask(state)
+    SilentAimFlask.Enabled = state and true or false
+    if SilentAimFlask.Enabled then
+        StartCureFlaskLaser()
+    else
+        StopCureFlaskLaser()
+    end
+end
+
+local function SetFlaskLaserVisible(state)
+    SilentAimFlask.ShowLaser = state and true or false
+    if not SilentAimFlask.ShowLaser then ClearFlaskLaser() end
+end
+
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    if SilentAimFlask.Enabled then StartCureFlaskLaser() end
+end)
+
 local Moonwalk = {
     Enabled = false, GuiVisible = false, Gui = nil,
     IsActive = false, InputConn = nil,
@@ -360,7 +675,7 @@ local function CreateMoonwalkGUI()
     local frame = Instance.new("Frame", screenGui)
     frame.Name = "Frame"
     frame.Size = UDim2.fromOffset(110, 36)
-    frame.Position = UDim2.fromScale(0.85, 0.45)
+    frame.Position = UDim2.fromScale(0.68, 0.75)
     frame.BackgroundColor3 = Library.Scheme.MainColor
     frame.BackgroundTransparency = 0
     frame.Active = true; frame.BorderSizePixel = 0
@@ -1333,62 +1648,6 @@ task.spawn(function()
     end
 end)
 
-local ThemeManager = {}
-
-ThemeManager.Presets = {
-    Default = {
-        AccentColor = Color3.fromRGB(0, 255, 255),
-        BackgroundColor = Color3.fromRGB(8, 12, 20),
-        MainColor = Color3.fromRGB(14, 20, 35),
-        OutlineColor = Color3.fromRGB(0, 179, 255),
-        FontColor = Color3.fromRGB(180, 239, 255),
-    },
-    Midnight = {
-        AccentColor = Color3.fromRGB(138, 43, 226),
-        BackgroundColor = Color3.fromRGB(10, 8, 18),
-        MainColor = Color3.fromRGB(20, 15, 30),
-        OutlineColor = Color3.fromRGB(180, 100, 255),
-        FontColor = Color3.fromRGB(220, 200, 255),
-    },
-    Crimson = {
-        AccentColor = Color3.fromRGB(255, 50, 50),
-        BackgroundColor = Color3.fromRGB(20, 8, 8),
-        MainColor = Color3.fromRGB(35, 14, 14),
-        OutlineColor = Color3.fromRGB(255, 80, 80),
-        FontColor = Color3.fromRGB(255, 200, 200),
-    },
-    Emerald = {
-        AccentColor = Color3.fromRGB(0, 255, 128),
-        BackgroundColor = Color3.fromRGB(8, 20, 14),
-        MainColor = Color3.fromRGB(14, 35, 22),
-        OutlineColor = Color3.fromRGB(0, 200, 100),
-        FontColor = Color3.fromRGB(180, 255, 210),
-    },
-    Sunset = {
-        AccentColor = Color3.fromRGB(255, 170, 0),
-        BackgroundColor = Color3.fromRGB(20, 12, 8),
-        MainColor = Color3.fromRGB(35, 22, 14),
-        OutlineColor = Color3.fromRGB(255, 130, 50),
-        FontColor = Color3.fromRGB(255, 220, 180),
-    },
-    Mono = {
-        AccentColor = Color3.fromRGB(220, 220, 220),
-        BackgroundColor = Color3.fromRGB(15, 15, 15),
-        MainColor = Color3.fromRGB(28, 28, 28),
-        OutlineColor = Color3.fromRGB(150, 150, 150),
-        FontColor = Color3.fromRGB(240, 240, 240),
-    },
-    Cyberpunk = {
-        AccentColor = Color3.fromRGB(255, 0, 200),
-        BackgroundColor = Color3.fromRGB(8, 8, 20),
-        MainColor = Color3.fromRGB(20, 10, 35),
-        OutlineColor = Color3.fromRGB(0, 255, 255),
-        FontColor = Color3.fromRGB(255, 200, 255),
-    },
-}
-
-ThemeManager.CurrentTheme = "Default"
-
 local guiName="NIEELSFreemium_V2_Tabbed"
 if CoreGui:FindFirstChild(guiName) then CoreGui[guiName]:Destroy()
 elseif LP.PlayerGui:FindFirstChild(guiName) then LP.PlayerGui[guiName]:Destroy() end
@@ -1542,7 +1801,7 @@ local function SwitchTab(n)
     ActiveTab=n
 end
 
-local TBC=4
+local TBC=3
 local function CreateTab(n,dn,o)
     local b=Instance.new("TextButton")
     b.Size=UDim2.new(1/TBC,-4,1,-4); b.LayoutOrder=o; b.BackgroundColor3=TIC; b.BackgroundTransparency=1
@@ -1671,34 +1930,9 @@ local function CreateCycle(p,o,lt,bt,cb)
     return VB, L
 end
 
-local function CreateThemeCycle(p,o,lt,bt,options,cb)
-    local C=Instance.new("TextButton"); C.Size=UDim2.new(1,0,0,24)
-    C.BackgroundTransparency=1; C.Text=""; C.LayoutOrder=o; C.Parent=p; C.ZIndex=3
-    local L=Instance.new("TextLabel"); L.Size=UDim2.new(0.55,0,1,0)
-    L.BackgroundTransparency=1; L.Text=lt; L.TextColor3=Color3.fromRGB(200,200,200)
-    L.Font=Enum.Font.Code; L.TextSize=12; L.TextXAlignment=Enum.TextXAlignment.Left; L.Parent=C; L.ZIndex=3
-    local cc=Color3.fromRGB(90,120,210)
-    local VB=Instance.new("TextButton"); VB.Size=UDim2.new(0.45,0,0,18)
-    VB.Position=UDim2.new(0.55,0,0.5,-9); VB.BackgroundTransparency=1
-    VB.Text=bt; VB.TextColor3=cc; VB.Font=Enum.Font.Code; VB.TextSize=10; VB.AutoButtonColor=false; VB.Parent=C; VB.ZIndex=4
-    Instance.new("UICorner",VB).CornerRadius=UDim.new(1,0)
-    local S=Instance.new("UIStroke",VB); S.Color=cc; S.Thickness=1; S.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
-    local idx = 1
-    for i, v in ipairs(options) do if v == bt then idx = i; break end end
-    VB.MouseButton1Click:Connect(function()
-        idx = idx + 1
-        if idx > #options then idx = 1 end
-        VB.Text = options[idx]
-        cb(options[idx])
-        NIEELS_Notify(lt, "Theme: " .. options[idx], 2.0)
-    end)
-    return VB, L
-end
-
 local MainTab=CreateTab("Main","MAIN",1)
 local SurvTab=CreateTab("Survivor","SURVIVOR",2)
 local KillerTab=CreateTab("Killer","KILLER",3)
-local SettingTab=CreateTab("Setting","SETTING",4)
 
 local o=1
 CreateSec(MainTab,"VISUAL",o); o=o+1
@@ -1744,6 +1978,9 @@ CreateDivider(SurvTab,o); o=o+1
 CreateSec(SurvTab,"HEALING",o); o=o+1
 CreateToggle(SurvTab,o,"Auto Self Heal",false,function(v)
     SetAutoSelfHeal(v)
+end); o=o+1
+CreateToggle(SurvTab,o,"Fast Bandage",false,function(v)
+    SetFastBandage(v)
 end); o=o+1
 CreateDivider(SurvTab,o); o=o+1
 CreateSec(SurvTab,"MOVEMENT",o); o=o+1
@@ -1796,6 +2033,18 @@ CreateToggle(KillerTab,o,"Auto Stalk",false,function(s)
     if s then startAutoStalk() else stopAutoStalk() end
 end); o=o+1
 CreateDivider(KillerTab,o); o=o+1
+CreateSec(KillerTab,"ATTACK AIMBOT",o); o=o+1
+CreateToggle(KillerTab,o,"Attack Aimbot",false,function(v) AttackAimbot.Enabled = v end); o=o+1
+CreateSliderRow(KillerTab,o,"Aimbot Max Dist",5,30,12,false,function(v) AttackAimbot.MaxDist = v end); o=o+1
+CreateSliderRow(KillerTab,o,"Aimbot Smoothness",0.05,1.0,0.5,true,function(v) AttackAimbot.Smoothness = v end); o=o+1
+CreateDivider(KillerTab,o); o=o+1
+CreateSec(KillerTab,"INFINITE LUNGE",o); o=o+1
+CreateToggle(KillerTab,o,"Infinite Lunge",false,function(v) SetInfiniteLunge(v) end); o=o+1
+CreateDivider(KillerTab,o); o=o+1
+CreateSec(KillerTab,"SILENT AIM FLASK",o); o=o+1
+CreateToggle(KillerTab,o,"Silent Aim Flask",false,function(v) SetSilentAimFlask(v) end); o=o+1
+CreateToggle(KillerTab,o,"Show Flask Laser",true,function(v) SetFlaskLaserVisible(v) end); o=o+1
+CreateDivider(KillerTab,o); o=o+1
 CreateSec(KillerTab,"AIMLOCK HIDDEN M2",o); o=o+1
 CreateToggle(KillerTab,o,"Aimlock Hidden M2",false,function(s)
     if _G.NIEELSAimlockHiddenSet then _G.NIEELSAimlockHiddenSet(s) end
@@ -1824,15 +2073,6 @@ CreateToggle(KillerTab,o,"Bypass Cooldown Killer",false,function(s)
         fn8(); StopMayersMobileHook(); NIEELS_Notify("NO COOLDOWN", "NO Cooldown Disable", 2.0)
     end
 end); o=o+1
-
-o=1
-CreateSec(SettingTab,"SETTING UI",o); o=o+1
-CreateThemeCycle(SettingTab,o,"Theme","Default",
-    {"Default","Midnight","Crimson","Emerald","Sunset","Mono","Cyberpunk"},
-    function(themeName)
-        ThemeManager.ApplyTheme(themeName)
-    end
-); o=o+1
 
 local SavedSize = MF.Size
 local SavedPosition = MF.Position
@@ -1934,136 +2174,6 @@ UIS.InputChanged:Connect(function(i)
     end
 end)
 
-function ThemeManager.ApplyTheme(themeName)
-    local preset = ThemeManager.Presets[themeName]
-    if not preset then return false end
-    ThemeManager.CurrentTheme = themeName
-
-    for key, color in pairs(preset) do
-        Library.Scheme[key] = color
-    end
-
-    TAC = Library.Scheme.AccentColor
-    TIC = Library.Scheme.BackgroundColor
-    ACC = Library.Scheme.AccentColor
-    ONC = Color3.fromRGB(60,200,120)
-    OFC = Library.Scheme.MainColor
-    LC = Library.Scheme.MainColor
-    TRC = Library.Scheme.BackgroundColor
-    SECT = Library.Scheme.OutlineColor
-    TXC = Library.Scheme.FontColor
-
-    pcall(function() MF.BackgroundColor3 = Library.Scheme.BackgroundColor end)
-    pcall(function() TB.BackgroundColor3 = Library.Scheme.MainColor end)
-    pcall(function() TBB.BackgroundColor3 = Library.Scheme.MainColor end)
-    pcall(function() TitleDivider.BackgroundColor3 = Library.Scheme.OutlineColor end)
-    pcall(function() TabBar.BackgroundColor3 = Library.Scheme.BackgroundColor end)
-    pcall(function() TabDivider.BackgroundColor3 = Library.Scheme.OutlineColor end)
-    pcall(function() TTL.TextColor3 = Library.Scheme.FontColor end)
-    pcall(function() TitleLogo.ImageColor3 = Library.Scheme.FontColor end)
-    pcall(function() CB.ImageColor3 = Library.Scheme.FontColor end)
-    pcall(function() MB.ImageColor3 = Library.Scheme.FontColor end)
-    pcall(function() LB.ImageColor3 = Library.Scheme.AccentColor end)
-    pcall(function() CP.BackgroundColor3 = Library.Scheme.MainColor end)
-    pcall(function() PT.TextColor3 = Library.Scheme.FontColor end)
-    pcall(function() YB.TextColor3 = Library.Scheme.FontColor end)
-    pcall(function() NB.TextColor3 = Library.Scheme.FontColor end)
-
-    pcall(function()
-        local str = MS
-        if str then str.Color = Library.Scheme.OutlineColor end
-    end)
-    pcall(function()
-        local str = LBS
-        if str then str.Color = Library.Scheme.AccentColor end
-    end)
-
-    for tabName, btn in pairs(TBN) do
-        local stroke = btn:FindFirstChildOfClass("UIStroke")
-        if stroke then stroke.Color = Library.Scheme.AccentColor end
-        if ActiveTab == tabName then
-            btn.TextColor3 = Library.Scheme.AccentColor
-        end
-    end
-
-    for tabName, scroll in pairs(TFN) do
-        scroll.ScrollBarImageColor3 = Library.Scheme.AccentColor
-        for _, desc in ipairs(scroll:GetDescendants()) do
-            pcall(function()
-                if desc:IsA("TextLabel") then
-                    if desc.TextSize == 10 then
-                        desc.TextColor3 = Library.Scheme.OutlineColor
-                    elseif desc.TextSize == 11 or desc.TextSize == 12 then
-                        desc.TextColor3 = Color3.fromRGB(200,200,200)
-                    end
-                elseif desc:IsA("UIStroke") then
-                    if desc.Parent and desc.Parent:IsA("TextButton") then
-                        desc.Color = Library.Scheme.AccentColor
-                        desc.Parent.TextColor3 = Library.Scheme.AccentColor
-                    end
-                elseif desc:IsA("Frame") then
-                    if desc.BackgroundColor3 == Color3.fromRGB(90,120,210) then
-                        desc.BackgroundColor3 = Library.Scheme.AccentColor
-                    end
-                end
-            end)
-        end
-    end
-
-    pcall(function() MiniFrame.BackgroundColor3 = Library.Scheme.MainColor end)
-    pcall(function() MiniStroke.Color = Library.Scheme.AccentColor end)
-    pcall(function() MiniGlow.ImageColor3 = Library.Scheme.AccentColor end)
-    pcall(function() MiniLogo.ImageColor3 = Library.Scheme.FontColor end)
-
-    pcall(function()
-        if Moonwalk.Gui then
-            local fr = Moonwalk.Gui:FindFirstChild("Frame")
-            if fr then
-                fr.BackgroundColor3 = Library.Scheme.MainColor
-                local st = fr:FindFirstChild("UIStroke")
-                if st then st.Color = Library.Scheme.OutlineColor end
-                local btn = fr:FindFirstChild("ActionButton")
-                if btn then
-                    if Moonwalk.Enabled then
-                        btn.TextColor3 = Library.Scheme.AccentColor
-                    else
-                        btn.TextColor3 = Library.Scheme.FontColor
-                    end
-                end
-            end
-        end
-    end)
-
-    pcall(function()
-        if StalkerGUI then
-            local fr = StalkerGUI:FindFirstChild("StalkerGrabButton")
-            if fr then
-                fr.BackgroundColor3 = Library.Scheme.MainColor
-                local st = fr:FindFirstChild("UIStroke")
-                if st then st.Color = Library.Scheme.OutlineColor end
-                local lbl = fr:FindFirstChild("TextLabel")
-                if lbl then lbl.TextColor3 = Library.Scheme.FontColor end
-            end
-        end
-    end)
-
-    pcall(function()
-        if BypassUI then
-            local btn = BypassUI:FindFirstChild("BypassGenButton")
-            if btn then
-                btn.BackgroundColor3 = Library.Scheme.MainColor
-                local st = btn:FindFirstChild("UIStroke")
-                if st then st.Color = Library.Scheme.OutlineColor end
-                local lbl = btn:FindFirstChild("TextLabel")
-                if lbl then lbl.TextColor3 = Library.Scheme.FontColor end
-            end
-        end
-    end)
-
-    NIEELS_Notify("Theme", "Applied: " .. themeName, 2.0)
-    return true
-end
-
 SwitchTab("Main")
 NIEELS_Notify("NIEELS HUB", "Script loaded by "..DEVELOPER_NAME.."!", 3)
 
@@ -2074,6 +2184,15 @@ YB.MouseButton1Click:Connect(function()
     DisableLowGraphic()
     SetStretchRes(false)
     SetAutoSelfHeal(false)
+    SetFastBandage(false)
+    SetInfiniteLunge(false)
+    SetSilentAimFlask(false)
+    AttackAimbot.Enabled = false
+    AttackAimbot.Holding = false
+    AttackAimbot.Target = nil
+    if AttackAimbotInputBeganConn then AttackAimbotInputBeganConn:Disconnect() end
+    if AttackAimbotInputEndedConn then AttackAimbotInputEndedConn:Disconnect() end
+    if AttackAimbotRenderConn then AttackAimbotRenderConn:Disconnect() end
     if _G.NIEELSAimlockHiddenSet then _G.NIEELSAimlockHiddenSet(false) end
     if StopHiddenM2Hook then StopHiddenM2Hook() end
     fn8(); StopMayersMobileHook()
